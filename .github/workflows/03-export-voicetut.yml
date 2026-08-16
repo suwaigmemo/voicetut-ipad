@@ -1,0 +1,145 @@
+name: 03 - Export Egyptian VoiceTut ONNX
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/03-export-voicetut.yml"
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyTorch CPU
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install dependencies
+        run: |
+          python -m pip install \
+            "transformers>=5.3.0" \
+            accelerate \
+            huggingface_hub \
+            safetensors \
+            numpy \
+            onnx \
+            onnxruntime \
+            soundfile \
+            librosa \
+            pydub
+
+      - name: Download OmniVoice source
+        run: |
+          git clone --depth 1 https://github.com/k2-fsa/OmniVoice.git work
+          python -m pip install -e ./work --no-deps
+
+      - name: Download ONNX exporter
+        run: |
+          git clone --depth 1 https://github.com/AFun9/Omnivoice-onnx.git work/onnx_export
+
+      - name: Download VoiceTut Egyptian checkpoint
+        run: |
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+
+          snapshot_download(
+              repo_id="mohammedaly22/VoiceTut-TTS",
+              local_dir="work/OmniVoice",
+              allow_patterns=[
+                  "config.json",
+                  "model.safetensors",
+                  "tokenizer.json",
+                  "tokenizer_config.json",
+                  "reference_speakers/*"
+              ],
+          )
+          print("VOICE_TUT_DOWNLOADED")
+          PY
+
+      - name: Show disk before export
+        run: |
+          du -sh work/OmniVoice
+          df -h /
+
+      - name: Export Egyptian LM to ONNX
+        run: |
+          python work/onnx_export/export_lm.py \
+            --device cpu \
+            --no-optimize
+
+      - name: Check FP32 ONNX
+        run: |
+          echo "FP32 export:"
+          find work/onnx_export/output/omnivoice_lm \
+            -maxdepth 1 -type f -exec ls -lh {} \;
+
+      - name: Quantize Egyptian model to INT8 HQ
+        run: |
+          python work/onnx_export/quantize.py \
+            --targets lm \
+            --methods int8 \
+            --int8-mode weight_only_hq \
+            --no-smoke
+
+      - name: Prepare browser package
+        run: |
+          mkdir -p release
+
+          cp \
+            work/onnx_export/output/omnivoice_lm_int8_hq/model.onnx \
+            release/voicetut-main.onnx
+
+          cp \
+            work/onnx_export/output/omnivoice_lm_int8_hq/model.onnx_data \
+            release/voicetut-main.onnx_data
+
+          cp work/OmniVoice/tokenizer.json release/tokenizer.json
+          cp work/OmniVoice/tokenizer_config.json release/tokenizer_config.json
+
+          if [ -d work/OmniVoice/reference_speakers ]; then
+            cp -r work/OmniVoice/reference_speakers release/
+          fi
+
+          echo '["voicetut-main.onnx_data"]' \
+            > release/voicetut-main-manifest.json
+
+          cat > release/omnivoice-config.json <<'JSON'
+          {
+            "audio_vocab_size": 1025,
+            "audio_mask_id": 1024,
+            "num_audio_codebook": 8,
+            "audio_codebook_weights": [8,8,6,6,4,4,2,2],
+            "sampling_rate": 24000,
+            "frame_rate": 75
+          }
+          JSON
+
+      - name: Verify browser package
+        run: |
+          echo "===== FINAL FILES ====="
+          find release -maxdepth 2 -type f -exec ls -lh {} \;
+          echo
+          sha256sum release/voicetut-main.onnx
+          sha256sum release/voicetut-main.onnx_data
+          echo "VOICE_TUT_EGYPTIAN_ONNX_READY"
+
+      - name: Upload Egyptian ONNX
+        uses: actions/upload-artifact@v4
+        with:
+          name: voicetut-egyptian-onnx
+          path: release/
+          retention-days: 30
+          compression-level: 0
