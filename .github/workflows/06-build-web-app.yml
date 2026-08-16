@@ -1,1 +1,1112 @@
+name: 06 - Build VoiceTut iPad Web App
 
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/06-build-web-app.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MODEL_TAG: voicetut-model-v1
+      VCOLOCO_COMMIT: e02811146b34e88d6c935b3d4f1ee8aaad382ff6
+
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+
+      - name: Prepare folders
+        run: |
+          rm -rf "$RUNNER_TEMP/model-src"
+          rm -rf "$RUNNER_TEMP/site"
+          rm -rf "$RUNNER_TEMP/vocoloco"
+
+          mkdir -p "$RUNNER_TEMP/model-src"
+          mkdir -p "$RUNNER_TEMP/site"
+          mkdir -p "$RUNNER_TEMP/site/models"
+
+      - name: Download our VoiceTut ONNX release
+        run: |
+          gh release download "$MODEL_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir "$RUNNER_TEMP/model-src" \
+            --clobber
+
+          echo "===== DOWNLOADED MODEL ====="
+          ls -lh "$RUNNER_TEMP/model-src"
+
+      - name: Check required VoiceTut files
+        run: |
+          test -f "$RUNNER_TEMP/model-src/voicetut-main.onnx"
+          test -f "$RUNNER_TEMP/model-src/voicetut-main.onnx_data"
+          test -f "$RUNNER_TEMP/model-src/audio-tokenizer-decoder.onnx"
+          test -f "$RUNNER_TEMP/model-src/audio-tokenizer-decoder.onnx_data"
+          test -f "$RUNNER_TEMP/model-src/omnivoice-config.json"
+          test -f "$RUNNER_TEMP/model-src/mohamed-tokens.json"
+
+          echo "VOICE_TUT_RELEASE_FILES_OK"
+
+      - name: Download pinned browser engine
+        run: |
+          git clone \
+            https://github.com/Magkino/vocoloco_tts.git \
+            "$RUNNER_TEMP/vocoloco"
+
+          git -C "$RUNNER_TEMP/vocoloco" \
+            checkout "$VCOLOCO_COMMIT"
+
+      - name: Copy browser application
+        run: |
+          SITE="$RUNNER_TEMP/site"
+          SRC="$RUNNER_TEMP/vocoloco"
+
+          cp "$SRC/index.html" "$SITE/index.html"
+          cp "$SRC/app.js" "$SITE/app.js"
+          cp "$SRC/duration-estimator.js" "$SITE/duration-estimator.js"
+          cp "$SRC/player.js" "$SITE/player.js"
+          cp "$SRC/sentence-buffer.js" "$SITE/sentence-buffer.js"
+          cp "$SRC/tailwind.css" "$SITE/tailwind.css"
+          cp "$SRC/text-chunker.js" "$SITE/text-chunker.js"
+          cp "$SRC/ui-dialogs.js" "$SITE/ui-dialogs.js"
+          cp "$SRC/og-image.png" "$SITE/og-image.png"
+
+          cp -R "$SRC/workers" "$SITE/workers"
+          cp -R "$SRC/lib" "$SITE/lib"
+
+          cp "$SRC/LICENSE" "$SITE/LICENSE-VocoLoco"
+          touch "$SITE/.nojekyll"
+
+          cat > "$SITE/NOTICE-MODIFICATIONS.txt" <<'TXT'
+          VoiceTut Egypt iPad Browser Build
+
+          Browser inference code is derived from VocoLoco under Apache-2.0.
+
+          Modified for this build:
+          - VoiceTut-TTS Egyptian ONNX checkpoint
+          - Egyptian Mohamed built-in voice
+          - local same-origin model storage
+          - chunked ONNX external data for GitHub Pages
+          - audio encoder removed from initial download
+          - Egyptian Arabic language mode
+          TXT
+
+      - name: Split large VoiceTut model for GitHub Pages
+        run: |
+          python - <<'PY'
+          import json
+          import shutil
+          from pathlib import Path
+
+          src = Path.home()
+          import os
+
+          model_src = Path(os.environ["RUNNER_TEMP"]) / "model-src"
+          models = Path(os.environ["RUNNER_TEMP"]) / "site" / "models"
+          models.mkdir(parents=True, exist_ok=True)
+
+          shutil.copy2(
+              model_src / "voicetut-main.onnx",
+              models / "voicetut-main.onnx"
+          )
+
+          shutil.copy2(
+              model_src / "audio-tokenizer-decoder.onnx",
+              models / "audio-tokenizer-decoder.onnx"
+          )
+
+          shutil.copy2(
+              model_src / "audio-tokenizer-decoder.onnx_data",
+              models / "audio-tokenizer-decoder.onnx_data"
+          )
+
+          shutil.copy2(
+              model_src / "omnivoice-config.json",
+              models / "omnivoice-config.json"
+          )
+
+          shutil.copy2(
+              model_src / "mohamed-tokens.json",
+              models / "mohamed-tokens.json"
+          )
+
+          source = model_src / "voicetut-main.onnx_data"
+
+          # 70 MiB: safely below GitHub's 100 MiB single-file limit.
+          chunk_size = 70 * 1024 * 1024
+          chunks = []
+
+          with source.open("rb") as f:
+              i = 0
+
+              while True:
+                  data = f.read(chunk_size)
+
+                  if not data:
+                      break
+
+                  name = f"main-data-{i:02d}.bin"
+                  path = models / name
+                  path.write_bytes(data)
+
+                  chunks.append({
+                      "file": name,
+                      "size": len(data)
+                  })
+
+                  print(
+                      f"{name}: "
+                      f"{len(data) / 1024 / 1024:.2f} MiB"
+                  )
+
+                  i += 1
+
+          manifest = {
+              "mainModel": "voicetut-main.onnx",
+              "mainExternalPath": "model.onnx_data",
+              "mainDataSize": source.stat().st_size,
+              "mainChunks": chunks,
+
+              "decoderModel":
+                  "audio-tokenizer-decoder.onnx",
+
+              "decoderData":
+                  "audio-tokenizer-decoder.onnx_data",
+
+              "decoderExternalPath":
+                  "model.onnx_data",
+
+              "config":
+                  "omnivoice-config.json",
+
+              "speaker":
+                  "mohamed-tokens.json"
+          }
+
+          total = (
+              (models / "voicetut-main.onnx").stat().st_size
+              + source.stat().st_size
+              + (models / "audio-tokenizer-decoder.onnx").stat().st_size
+              + (models / "audio-tokenizer-decoder.onnx_data").stat().st_size
+          )
+
+          manifest["totalDownloadBytes"] = total
+
+          (models / "model-chunks.json").write_text(
+              json.dumps(
+                  manifest,
+                  ensure_ascii=False,
+                  indent=2
+              ),
+              encoding="utf-8"
+          )
+
+          print("Main data bytes:", source.stat().st_size)
+          print("Chunks:", len(chunks))
+          print("Total browser model bytes:", total)
+          print("VOICE_TUT_CHUNKS_READY")
+          PY
+
+      - name: Patch browser for Egyptian VoiceTut
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os
+
+          site = Path(os.environ["RUNNER_TEMP"]) / "site"
+
+          # ------------------------------------------------------------
+          # Patch app.js
+          # ------------------------------------------------------------
+
+          app_path = site / "app.js"
+          app = app_path.read_text(encoding="utf-8")
+
+          old_model = (
+              "const MODEL_BASE_URL = "
+              "'https://huggingface.co/Gigsu/"
+              "vocoloco-onnx/resolve/main';"
+          )
+
+          new_model = (
+              "const MODEL_BASE_URL = "
+              "new URL('./models', window.location.href)"
+              ".href.replace(/\\/$/, '');"
+          )
+
+          if old_model not in app:
+              raise RuntimeError(
+                  "Could not find upstream MODEL_BASE_URL"
+              )
+
+          app = app.replace(
+              old_model,
+              new_model,
+              1
+          )
+
+          # VoiceTut official defaults:
+          # language=arz, guidance=2.0, t_shift=0.1
+
+          app = app.replace(
+              "lang: null,",
+              "lang: 'arz',"
+          )
+
+          app = app.replace(
+              "guidanceScale: 3.0,",
+              "guidanceScale: 2.0,"
+          )
+
+          app = app.replace(
+              "tShift: 0.05,",
+              "tShift: 0.1,"
+          )
+
+          init_marker = (
+              "// ─── Init "
+              "────────────────────────────────"
+              "───────────────────"
+          )
+
+          idx = app.find(init_marker)
+
+          if idx == -1:
+              raise RuntimeError(
+                  "Could not find app init marker"
+              )
+
+          prefix = app[:idx]
+
+          new_init = r'''
+          // ─── VoiceTut Egyptian built-in voice ───────────────────────
+
+          async function ensureVoiceTutMohamed() {
+            const rows = await getSavedVoices();
+
+            const current = rows.find(
+              v => v.id === 'voicetut-mohamed'
+            );
+
+            if (
+              current &&
+              current.tokens &&
+              current.tokens.length > 0
+            ) {
+              return;
+            }
+
+            const response = await fetch(
+              `${MODEL_BASE_URL}/mohamed-tokens.json`,
+              { cache: 'force-cache' }
+            );
+
+            if (!response.ok) {
+              throw new Error(
+                `Mohamed voice HTTP ${response.status}`
+              );
+            }
+
+            const data = await response.json();
+
+            const record = {
+              id: 'voicetut-mohamed',
+              name: 'Mohamed — مصري',
+              refText: data.referenceText,
+              refAudio: null,
+              tokens: new Int32Array(data.tokens),
+              tokenCount: data.tokenCount,
+              duration: data.tokenCount / 25,
+              createdAt: Date.now(),
+              scriptId: null,
+              lang: 'arz',
+              source: 'VoiceTut built-in',
+              version: 2
+            };
+
+            await saveVoice(record);
+          }
+
+          // ─── Init ────────────────────────────────────────────────────
+
+          (async () => {
+            try {
+              await ensureVoiceTutMohamed();
+            } catch (e) {
+              console.error(
+                'Could not install Mohamed voice:',
+                e
+              );
+            }
+
+            await refreshVoices();
+
+            selectedSavedVoice =
+              voicesCache.find(
+                v => v.id === 'voicetut-mohamed'
+              ) || null;
+
+            renderStudioVoicePicker();
+            updateVoicesBadge();
+            updateVoiceUI();
+
+            if (qualityEl) {
+              qualityEl.value = '32';
+            }
+
+            try {
+              history = await loadHistory();
+              updateLibraryBadge();
+              pruneHistoryDB();
+            } catch (e) {
+              console.warn(
+                'Failed to load history:',
+                e
+              );
+            }
+
+            initWorker();
+          })();
+          '''
+
+          app = prefix + new_init + "\n"
+
+          app_path.write_text(
+              app,
+              encoding="utf-8"
+          )
+
+          # ------------------------------------------------------------
+          # Patch tts-worker.js
+          # ------------------------------------------------------------
+
+          worker_path = site / "workers" / "tts-worker.js"
+          worker = worker_path.read_text(
+              encoding="utf-8"
+          )
+
+          start_marker = (
+              "async function init("
+              "modelBaseUrl, forceCPU) {"
+          )
+
+          end_marker = (
+              "// ─── Reference audio encoding "
+              "────────────────────────────────"
+          )
+
+          start = worker.find(start_marker)
+          end = worker.find(
+              end_marker,
+              start
+          )
+
+          if start == -1 or end == -1:
+              raise RuntimeError(
+                  "Could not locate worker init block"
+              )
+
+          new_worker_init = r'''
+          async function init(modelBaseUrl, forceCPU) {
+            try {
+              let hasWorkingGPU = false;
+
+              if (
+                !forceCPU &&
+                typeof navigator !== 'undefined' &&
+                navigator.gpu
+              ) {
+                try {
+                  const adapter =
+                    await navigator.gpu.requestAdapter();
+
+                  hasWorkingGPU = !!adapter;
+                } catch {}
+              }
+
+              if (!hasWorkingGPU) {
+                postMessage({
+                  type: 'progress',
+                  stage: 'loading',
+                  detail:
+                    'WebGPU غير متاح — سيتم استخدام CPU'
+                });
+              }
+
+              postMessage({
+                type: 'progress',
+                stage: 'loading',
+                phase: 'config',
+                detail: 'Loading Egyptian VoiceTut config...'
+              });
+
+              const manifestResponse = await fetch(
+                `${modelBaseUrl}/model-chunks.json`
+              );
+
+              if (!manifestResponse.ok) {
+                throw new Error(
+                  `Manifest HTTP ${manifestResponse.status}`
+                );
+              }
+
+              const manifest =
+                await manifestResponse.json();
+
+              const configResponse = await fetch(
+                `${modelBaseUrl}/${manifest.config}`
+              );
+
+              if (!configResponse.ok) {
+                throw new Error(
+                  `Config HTTP ${configResponse.status}`
+                );
+              }
+
+              config = await configResponse.json();
+
+              postMessage({
+                type: 'progress',
+                stage: 'loading',
+                phase: 'tokenizer',
+                detail: 'Loading text tokenizer...'
+              });
+
+              tokenizer =
+                await AutoTokenizer.from_pretrained(
+                  'Gigsu/vocoloco-onnx'
+                );
+
+              const mainModelUrl =
+                `${modelBaseUrl}/${manifest.mainModel}`;
+
+              const decoderModelUrl =
+                `${modelBaseUrl}/${manifest.decoderModel}`;
+
+              const decoderDataUrl =
+                `${modelBaseUrl}/${manifest.decoderData}`;
+
+              const chunkUrls =
+                manifest.mainChunks.map(
+                  x => `${modelBaseUrl}/${x.file}`
+                );
+
+              const urls = [
+                mainModelUrl,
+                ...chunkUrls,
+                decoderModelUrl,
+                decoderDataUrl
+              ];
+
+              const cache =
+                await caches.open(CACHE_NAME);
+
+              const checks =
+                await Promise.all(
+                  urls.map(
+                    u => cache.match(u)
+                  )
+                );
+
+              let cachedBytes = 0;
+
+              for (const hit of checks) {
+                if (!hit) continue;
+
+                const n = parseInt(
+                  hit.headers.get(
+                    'Content-Length'
+                  ) || '0',
+                  10
+                );
+
+                if (n > 0) {
+                  cachedBytes += n;
+                }
+              }
+
+              const uncachedCount =
+                checks.filter(
+                  x => !x
+                ).length;
+
+              postMessage({
+                type: 'plan',
+                firstRun:
+                  uncachedCount === urls.length,
+                resuming:
+                  uncachedCount > 0 &&
+                  uncachedCount < urls.length,
+                totalBytes:
+                  manifest.totalDownloadBytes,
+                cachedBytes,
+                fileCount: urls.length,
+                filesToDownload:
+                  uncachedCount
+              });
+
+              let completedBytes =
+                cachedBytes;
+
+              async function loadOne(
+                url,
+                label,
+                index
+              ) {
+                const cached =
+                  !!checks[index];
+
+                let lastPost = 0;
+
+                const buf =
+                  await fetchWithProgress(
+                    url,
+                    (loaded, total) => {
+                      const now =
+                        performance.now();
+
+                      if (
+                        now - lastPost < 150
+                      ) {
+                        return;
+                      }
+
+                      lastPost = now;
+
+                      postMessage({
+                        type: 'progress',
+                        stage: 'downloading',
+                        loadedBytes:
+                          completedBytes +
+                          loaded,
+                        totalBytes:
+                          manifest.totalDownloadBytes,
+                        fileIndex:
+                          index + 1,
+                        fileCount:
+                          urls.length,
+                        file:
+                          url.split('/').pop(),
+                        detail:
+                          `${label}: ` +
+                          `${Math.round(
+                            loaded / 1e6
+                          )}/` +
+                          `${total
+                            ? Math.round(
+                                total / 1e6
+                              )
+                            : '?'} MB`
+                      });
+                    },
+                    null
+                  );
+
+                if (!cached) {
+                  completedBytes +=
+                    buf.byteLength;
+                }
+
+                postMessage({
+                  type: 'progress',
+                  stage: 'downloading',
+                  loadedBytes:
+                    completedBytes,
+                  totalBytes:
+                    manifest.totalDownloadBytes,
+                  fileIndex:
+                    index + 1,
+                  fileCount:
+                    urls.length,
+                  file:
+                    url.split('/').pop(),
+                  detail:
+                    `${label} complete`
+                });
+
+                return buf;
+              }
+
+              let fileIndex = 0;
+
+              const mainModelBuf =
+                await loadOne(
+                  mainModelUrl,
+                  'VoiceTut model',
+                  fileIndex++
+                );
+
+              postMessage({
+                type: 'progress',
+                stage: 'loading',
+                detail:
+                  'Assembling Egyptian model...'
+              });
+
+              const mainData =
+                new Uint8Array(
+                  manifest.mainDataSize
+                );
+
+              let offset = 0;
+
+              for (
+                let i = 0;
+                i < chunkUrls.length;
+                i++
+              ) {
+                const buf =
+                  await loadOne(
+                    chunkUrls[i],
+                    `Model part ${i + 1}/` +
+                    `${chunkUrls.length}`,
+                    fileIndex++
+                  );
+
+                const bytes =
+                  new Uint8Array(buf);
+
+                mainData.set(
+                  bytes,
+                  offset
+                );
+
+                offset +=
+                  bytes.byteLength;
+              }
+
+              if (
+                offset !==
+                manifest.mainDataSize
+              ) {
+                throw new Error(
+                  'VoiceTut model size mismatch: ' +
+                  `${offset} != ` +
+                  `${manifest.mainDataSize}`
+                );
+              }
+
+              const decoderModelBuf =
+                await loadOne(
+                  decoderModelUrl,
+                  'Audio decoder',
+                  fileIndex++
+                );
+
+              const decoderDataBuf =
+                await loadOne(
+                  decoderDataUrl,
+                  'Audio decoder data',
+                  fileIndex++
+                );
+
+              const mainExternalData = [{
+                path:
+                  manifest.mainExternalPath,
+                data:
+                  mainData.buffer
+              }];
+
+              postMessage({
+                type: 'progress',
+                stage: 'loading',
+                phase: 'session-main',
+                detail:
+                  'Starting Egyptian VoiceTut engine...'
+              });
+
+              let actualBackend = 'cpu';
+
+              if (hasWorkingGPU) {
+                try {
+                  mainSession =
+                    await ort.InferenceSession.create(
+                      mainModelBuf,
+                      {
+                        executionProviders:
+                          ['webgpu'],
+                        externalData:
+                          mainExternalData,
+                        graphOptimizationLevel:
+                          'all',
+                        enableCpuMemArena:
+                          true
+                      }
+                    );
+
+                  actualBackend =
+                    'webgpu';
+
+                } catch (e) {
+                  console.warn(
+                    'VoiceTut WebGPU failed; ' +
+                    'falling back to WASM:',
+                    e.message
+                  );
+
+                  mainSession = null;
+                }
+              }
+
+              if (!mainSession) {
+                mainSession =
+                  await ort.InferenceSession.create(
+                    mainModelBuf,
+                    {
+                      executionProviders:
+                        ['wasm'],
+                      externalData:
+                        mainExternalData,
+                      graphOptimizationLevel:
+                        'all',
+                      enableCpuMemArena:
+                        true
+                    }
+                  );
+
+                actualBackend = 'cpu';
+              }
+
+              if (
+                actualBackend === 'cpu' &&
+                hasWorkingGPU
+              ) {
+                try {
+                  gpuPostProc =
+                    new GpuPostProcessor();
+
+                  await gpuPostProc.init();
+                } catch {
+                  gpuPostProc = null;
+                }
+              }
+
+              postMessage({
+                type: 'progress',
+                stage: 'loading',
+                phase: 'session-decoder',
+                detail:
+                  'Starting audio decoder...'
+              });
+
+              const decoderOptions = {
+                executionProviders:
+                  actualBackend === 'webgpu'
+                    ? ['webgpu', 'wasm']
+                    : ['wasm'],
+
+                externalData: [{
+                  path:
+                    manifest.decoderExternalPath,
+                  data:
+                    decoderDataBuf
+                }],
+
+                graphOptimizationLevel:
+                  'all'
+              };
+
+              try {
+                decoderSession =
+                  await ort.InferenceSession.create(
+                    decoderModelBuf,
+                    decoderOptions
+                  );
+
+              } catch (e) {
+                console.warn(
+                  'Decoder GPU failed; ' +
+                  'using WASM:',
+                  e.message
+                );
+
+                decoderSession =
+                  await ort.InferenceSession.create(
+                    decoderModelBuf,
+                    {
+                      executionProviders:
+                        ['wasm'],
+
+                      externalData: [{
+                        path:
+                          manifest.decoderExternalPath,
+                        data:
+                          decoderDataBuf
+                      }],
+
+                      graphOptimizationLevel:
+                        'all'
+                    }
+                  );
+              }
+
+              # Encoder intentionally omitted:
+              # Mohamed voice tokens are already precomputed.
+              encoderSession = null;
+
+              postMessage({
+                type: 'progress',
+                stage: 'loading',
+                phase: 'warmup',
+                detail:
+                  'Warming up Egyptian voice...'
+              });
+
+              try {
+                const dummyIds =
+                  new BigInt64Array(
+                    2 * 8 * 4
+                  ).fill(1024n);
+
+                const dummyMask =
+                  new Uint8Array(
+                    2 * 4
+                  );
+
+                const dummyAttn =
+                  new Uint8Array(
+                    2 * 1 * 4 * 4
+                  ).fill(1);
+
+                await mainSession.run({
+                  input_ids:
+                    new ort.Tensor(
+                      'int64',
+                      dummyIds,
+                      [2, 8, 4]
+                    ),
+
+                  audio_mask:
+                    new ort.Tensor(
+                      'bool',
+                      dummyMask,
+                      [2, 4]
+                    ),
+
+                  attention_mask:
+                    new ort.Tensor(
+                      'bool',
+                      dummyAttn,
+                      [2, 1, 4, 4]
+                    )
+                });
+
+                const dummyCodes =
+                  new BigInt64Array(
+                    8 * 2
+                  ).fill(0n);
+
+                await decoderSession.run({
+                  audio_codes:
+                    new ort.Tensor(
+                      'int64',
+                      dummyCodes,
+                      [1, 8, 2]
+                    )
+                });
+
+              } catch (e) {
+                console.warn(
+                  'Warm-up warning:',
+                  e.message
+                );
+              }
+
+              postMessage({
+                type: 'ready',
+                backend:
+                  actualBackend,
+                encoderAvailable:
+                  false
+              });
+
+            } catch (err) {
+              console.error(err);
+
+              postMessage({
+                type: 'error',
+                message:
+                  `Init failed: ${err.message}`
+              });
+            }
+          }
+
+          '''
+
+          # JavaScript uses // comments, not #.
+          new_worker_init = (
+              new_worker_init
+              .replace(
+                  "              # Encoder intentionally omitted:",
+                  "              // Encoder intentionally omitted:"
+              )
+              .replace(
+                  "              # Mohamed voice tokens are already precomputed.",
+                  "              // Mohamed voice tokens are already precomputed."
+              )
+          )
+
+          worker = (
+              worker[:start]
+              + new_worker_init
+              + "\n"
+              + worker[end:]
+          )
+
+          worker_path.write_text(
+              worker,
+              encoding="utf-8"
+          )
+
+          # ------------------------------------------------------------
+          # Basic branding
+          # ------------------------------------------------------------
+
+          index_path = site / "index.html"
+          html = index_path.read_text(
+              encoding="utf-8"
+          )
+
+          html = html.replace(
+              "VocoLoco",
+              "VoiceTut Egypt"
+          )
+
+          html = html.replace(
+              "600+ languages",
+              "Egyptian Arabic"
+          )
+
+          index_path.write_text(
+              html,
+              encoding="utf-8"
+          )
+
+          print("VOICE_TUT_BROWSER_PATCH_OK")
+          PY
+
+      - name: Validate web app
+        run: |
+          SITE="$RUNNER_TEMP/site"
+
+          node --check "$SITE/app.js"
+          node --check "$SITE/workers/tts-worker.js"
+
+          python - <<'PY'
+          from pathlib import Path
+          import os
+
+          site = Path(
+              os.environ["RUNNER_TEMP"]
+          ) / "site"
+
+          max_allowed = (
+              100 * 1024 * 1024
+          )
+
+          biggest = 0
+
+          for p in site.rglob("*"):
+              if not p.is_file():
+                  continue
+
+              size = p.stat().st_size
+              biggest = max(
+                  biggest,
+                  size
+              )
+
+              if size >= max_allowed:
+                  raise RuntimeError(
+                      f"File too large for GitHub: "
+                      f"{p} = {size}"
+                  )
+
+          total = sum(
+              p.stat().st_size
+              for p in site.rglob("*")
+              if p.is_file()
+          )
+
+          print(
+              "Published site size:",
+              round(
+                  total /
+                  1024 /
+                  1024,
+                  2
+              ),
+              "MiB"
+          )
+
+          print(
+              "Largest file:",
+              round(
+                  biggest /
+                  1024 /
+                  1024,
+                  2
+              ),
+              "MiB"
+          )
+
+          if total >= (
+              950 *
+              1024 *
+              1024
+          ):
+              raise RuntimeError(
+                  "Site is too close to "
+                  "GitHub Pages 1 GB limit"
+              )
+
+          print(
+              "VOICE_TUT_WEB_VALIDATION_OK"
+          )
+          PY
+
+      - name: Publish site to gh-pages branch
+        run: |
+          SITE="$RUNNER_TEMP/site"
+
+          git config user.name \
+            "github-actions[bot]"
+
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git config http.postBuffer \
+            1048576000
+
+          git checkout --orphan \
+            voicetut-pages-build
+
+          git rm -rf . || true
+
+          cp -a "$SITE"/. .
+
+          git add -A
+
+          git commit \
+            -m "Publish VoiceTut Egyptian iPad web app"
+
+          git push \
+            --force \
+            origin \
+            HEAD:gh-pages
+
+      - name: Success
+        run: |
+          echo "===================================="
+          echo "VOICE_TUT_IPAD_WEB_APP_READY"
+          echo "Branch: gh-pages"
+          echo "===================================="
