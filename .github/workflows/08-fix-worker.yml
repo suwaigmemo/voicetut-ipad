@@ -1,0 +1,65 @@
+name: 08 - Fix VoiceTut Worker
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/08-fix-worker.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          fetch-depth: 0
+
+      - name: Fix JavaScript worker
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path("workers/tts-worker.js")
+          text = p.read_text(encoding="utf-8")
+
+          text = text.replace(
+              "    # Encoder intentionally omitted:",
+              "    // Encoder intentionally omitted:"
+          )
+
+          text = text.replace(
+              "    # Mohamed voice tokens are already precomputed.",
+              "    // Mohamed voice tokens are already precomputed."
+          )
+
+          p.write_text(text, encoding="utf-8")
+
+          print("WORKER_COMMENTS_FIXED")
+          PY
+
+      - name: Verify JavaScript
+        run: |
+          node --check workers/tts-worker.js
+          node --check app.js
+          echo "JAVASCRIPT_SYNTAX_OK"
+
+      - name: Publish fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add workers/tts-worker.js
+          git commit -m "Fix VoiceTut worker JavaScript syntax"
+          git push origin gh-pages
+
+      - name: Success
+        run: |
+          echo "VOICE_TUT_WORKER_FIXED"
