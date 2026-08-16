@@ -1,0 +1,11 @@
+VoiceTut Egypt iPad Browser Build
+
+Browser inference code is derived from VocoLoco under Apache-2.0.
+
+Modified for this build:
+- VoiceTut-TTS Egyptian ONNX checkpoint
+- Egyptian Mohamed built-in voice
+- local same-origin model storage
+- chunked ONNX external data for GitHub Pages
+- audio encoder removed from initial download
+- Egyptian Arabic language mode

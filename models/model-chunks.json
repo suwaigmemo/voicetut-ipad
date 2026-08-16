@@ -1,0 +1,49 @@
+{
+  "mainModel": "voicetut-main.onnx",
+  "mainExternalPath": "model.onnx_data",
+  "mainDataSize": 640295440,
+  "mainChunks": [
+    {
+      "file": "main-data-00.bin",
+      "size": 73400320
+    },
+    {
+      "file": "main-data-01.bin",
+      "size": 73400320
+    },
+    {
+      "file": "main-data-02.bin",
+      "size": 73400320
+    },
+    {
+      "file": "main-data-03.bin",
+      "size": 73400320
+    },
+    {
+      "file": "main-data-04.bin",
+      "size": 73400320
+    },
+    {
+      "file": "main-data-05.bin",
+      "size": 73400320
+    },
+    {
+      "file": "main-data-06.bin",
+      "size": 73400320
+    },
+    {
+      "file": "main-data-07.bin",
+      "size": 73400320
+    },
+    {
+      "file": "main-data-08.bin",
+      "size": 53092880
+    }
+  ],
+  "decoderModel": "audio-tokenizer-decoder.onnx",
+  "decoderData": "audio-tokenizer-decoder.onnx_data",
+  "decoderExternalPath": "model.onnx_data",
+  "config": "omnivoice-config.json",
+  "speaker": "mohamed-tokens.json",
+  "totalDownloadBytes": 727370860
+}

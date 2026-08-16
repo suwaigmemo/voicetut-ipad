@@ -1,0 +1,17 @@
+{
+  "audio_vocab_size": 1025,
+  "audio_mask_id": 1024,
+  "num_audio_codebook": 8,
+  "audio_codebook_weights": [
+    8,
+    8,
+    6,
+    6,
+    4,
+    4,
+    2,
+    2
+  ],
+  "sampling_rate": 24000,
+  "frame_rate": 25
+}
