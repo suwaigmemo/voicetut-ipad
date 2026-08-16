@@ -425,7 +425,7 @@ async function decodeTokens(tokens, C, T) {
   const codes = new BigInt64Array(C * T);
   codes.set(tokens);
   const r = await decoderSession.run({ audio_codes: new ort.Tensor('int64', codes, [1, C, T]) });
-  return r.audio_values.data;
+  return r.audio.data;
 }
 
 function postProcessAudio(pcm, sr, normalize = true) {
