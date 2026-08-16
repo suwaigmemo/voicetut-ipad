@@ -1,0 +1,57 @@
+name: 07 - Enable VoiceTut on iPad
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/07-enable-ipad.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  enable-ipad:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          fetch-depth: 0
+
+      - name: Remove mobile browser block
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path("index.html")
+          html = p.read_text(encoding="utf-8")
+
+          old = "if (isMobile) {"
+          new = "if (false) {"
+
+          if old not in html:
+              raise RuntimeError("Mobile block not found")
+
+          html = html.replace(old, new, 1)
+
+          p.write_text(html, encoding="utf-8")
+
+          print("IPAD_BLOCK_REMOVED")
+          PY
+
+      - name: Commit iPad version
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add index.html
+          git commit -m "Enable VoiceTut on iPad"
+          git push origin gh-pages
+
+      - name: Success
+        run: |
+          echo "VOICE_TUT_IPAD_ENABLED"
