@@ -1,0 +1,133 @@
+name: 09 - Fix VoiceTut ONNX Feeds
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/09-fix-onnx-feeds.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          fetch-depth: 0
+
+      - name: Fix VoiceTut ONNX inputs and output
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path("workers/tts-worker.js")
+          text = p.read_text(encoding="utf-8")
+
+          # -------------------------------------------------
+          # 1. Create position_ids for both inference batches
+          # -------------------------------------------------
+          marker = "  // Token state\n"
+
+          position_block = """  // Position IDs required by the exported Qwen3 ONNX model
+          const bPos = new BigInt64Array(2 * maxLen);
+
+          for (let b = 0; b < 2; b++) {
+            for (let s = 0; s < maxLen; s++) {
+              bPos[b * maxLen + s] = BigInt(s);
+            }
+          }
+
+          """
+
+          if "const bPos = new BigInt64Array(2 * maxLen);" not in text:
+              if marker not in text:
+                  raise RuntimeError("Token-state marker not found")
+
+              text = text.replace(
+                  marker,
+                  position_block + marker,
+                  1
+              )
+
+          # -------------------------------------------------
+          # 2. Pass position_ids into mainSession.run()
+          # -------------------------------------------------
+          old_feed = """      attention_mask: T('bool', bAttn, [2, 1, maxLen, maxLen]),
+              });"""
+
+          new_feed = """      attention_mask: T('bool', bAttn, [2, 1, maxLen, maxLen]),
+                position_ids: T('int64', bPos, [2, maxLen]),
+              });"""
+
+          if "position_ids: T('int64', bPos, [2, maxLen])" not in text:
+              if old_feed not in text:
+                  raise RuntimeError(
+                      "Generation feed block not found"
+                  )
+
+              text = text.replace(
+                  old_feed,
+                  new_feed,
+                  1
+              )
+
+          # -------------------------------------------------
+          # 3. Exporter output is named logits, not audio_logits
+          # -------------------------------------------------
+          old_output = "const logits = results.audio_logits.data;"
+          new_output = "const logits = results.logits.data;"
+
+          if old_output in text:
+              text = text.replace(
+                  old_output,
+                  new_output,
+                  1
+              )
+
+          if new_output not in text:
+              raise RuntimeError(
+                  "Could not patch ONNX output name"
+              )
+
+          p.write_text(
+              text,
+              encoding="utf-8"
+          )
+
+          print("POSITION_IDS_FIXED")
+          print("LOGITS_OUTPUT_FIXED")
+          PY
+
+      - name: Verify JavaScript
+        run: |
+          node --check workers/tts-worker.js
+
+          grep -F \
+            "position_ids: T('int64', bPos, [2, maxLen])" \
+            workers/tts-worker.js
+
+          grep -F \
+            "const logits = results.logits.data;" \
+            workers/tts-worker.js
+
+          echo "VOICE_TUT_ONNX_FEEDS_OK"
+
+      - name: Publish fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add workers/tts-worker.js
+          git commit -m "Fix VoiceTut ONNX position IDs and logits output"
+          git push origin gh-pages
+
+      - name: Success
+        run: |
+          echo "VOICE_TUT_GENERATION_FIX_PUBLISHED"
