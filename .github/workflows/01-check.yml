@@ -1,0 +1,47 @@
+name: VoiceTut iPad Check
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check environment
+        run: |
+          python --version
+          uname -a
+          df -h /
+          free -h
+
+      - name: Check VoiceTut model
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          python - <<'PY'
+          from huggingface_hub import model_info
+
+          info = model_info("mohammedaly22/VoiceTut-TTS")
+
+          print("Model:", info.id)
+          print("SHA:", info.sha)
+          print("Private:", info.private)
+
+          files = [x.rfilename for x in (info.siblings or [])]
+
+          print("config.json:", "FOUND" if "config.json" in files else "NOT FOUND")
+          print("model.safetensors:", "FOUND" if "model.safetensors" in files else "NOT FOUND")
+
+          print("VOICETUT_IPAD_CHECK_OK")
+          PY
