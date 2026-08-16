@@ -1,0 +1,65 @@
+name: 10 - Fix Decoder Output
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/10-fix-decoder-output.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          fetch-depth: 0
+
+      - name: Fix decoder output name
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path("workers/tts-worker.js")
+          text = p.read_text(encoding="utf-8")
+
+          old = "return r.audio_values.data;"
+          new = "return r.audio.data;"
+
+          if old not in text:
+              raise RuntimeError("Decoder output line not found")
+
+          text = text.replace(old, new, 1)
+
+          p.write_text(text, encoding="utf-8")
+
+          print("DECODER_OUTPUT_FIXED")
+          PY
+
+      - name: Verify JavaScript
+        run: |
+          node --check workers/tts-worker.js
+
+          grep -F "return r.audio.data;" workers/tts-worker.js
+
+          echo "DECODER_OUTPUT_OK"
+
+      - name: Publish fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add workers/tts-worker.js
+          git commit -m "Fix VoiceTut decoder output name"
+          git push origin gh-pages
+
+      - name: Success
+        run: |
+          echo "VOICE_TUT_DECODER_FIX_PUBLISHED"
