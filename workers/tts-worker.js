@@ -289,6 +289,15 @@ async function generateIterative(inp, cfg, numStep, guidanceScale, tShift, layer
   for (let p = uncondLen; p < maxLen; p++)
     bAttn[maxLen * maxLen + p * maxLen + p] = 1;
 
+  // Position IDs required by the exported Qwen3 ONNX model
+const bPos = new BigInt64Array(2 * maxLen);
+
+for (let b = 0; b < 2; b++) {
+  for (let s = 0; s < maxLen; s++) {
+    bPos[b * maxLen + s] = BigInt(s);
+  }
+}
+
   // Token state
   const tokens = new BigInt64Array(C * numTargetTokens).fill(BigInt(maskId));
   pred_buf = null; scores_buf = null;
@@ -323,8 +332,9 @@ async function generateIterative(inp, cfg, numStep, guidanceScale, tShift, layer
       input_ids: T('int64', bIds, [2, C, maxLen]),
       audio_mask: T('bool', bMask, [2, maxLen]),
       attention_mask: T('bool', bAttn, [2, 1, maxLen, maxLen]),
+      position_ids: T('int64', bPos, [2, maxLen]),
     });
-    const logits = results.audio_logits.data; // (2, C, maxLen, V)
+    const logits = results.logits.data; // (2, C, maxLen, V)
     totalModelMs += performance.now() - modelT0;
 
     const nPos = C * numTargetTokens;
