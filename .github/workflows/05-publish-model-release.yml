@@ -1,0 +1,265 @@
+name: 05 - Publish VoiceTut Model Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/05-publish-model-release.yml"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: voicetut-model-v1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download exported model artifacts
+        run: |
+          mkdir -p bundle/main bundle/audio
+
+          gh run download 31972865911 \
+            --repo "${{ github.repository }}" \
+            --name voicetut-egyptian-onnx \
+            --dir bundle/main
+
+          gh run download 31973114610 \
+            --repo "${{ github.repository }}" \
+            --name voicetut-audio-tokenizer-onnx \
+            --dir bundle/audio
+
+      - name: Install token precompute dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy scipy soundfile onnxruntime
+
+      - name: Precompute Mohamed speaker tokens
+        run: |
+          mkdir -p encoder release
+
+          cp bundle/audio/audio-tokenizer-encoder.onnx \
+             encoder/model.onnx
+
+          cp bundle/audio/audio-tokenizer-encoder.onnx_data \
+             encoder/model.onnx_data
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from math import gcd
+
+          import numpy as np
+          import soundfile as sf
+          from scipy.signal import resample_poly
+          import onnxruntime as ort
+
+          root = Path(".")
+
+          refs = json.loads(
+              (root / "bundle/main/reference_speakers/references.json")
+              .read_text(encoding="utf-8")
+          )
+
+          spk = next(
+              x for x in refs
+              if x["speaker_name"] == "Mohamed"
+          )
+
+          audio_path = (
+              root / "bundle/main" / spk["audio_path"]
+          )
+
+          audio, sr = sf.read(
+              audio_path,
+              dtype="float32",
+              always_2d=False
+          )
+
+          if audio.ndim == 2:
+              audio = audio.mean(axis=1)
+
+          if sr != 24000:
+              g = gcd(sr, 24000)
+              audio = resample_poly(
+                  audio,
+                  24000 // g,
+                  sr // g
+              ).astype(np.float32)
+              sr = 24000
+
+          hop = 960
+          length = len(audio) - (len(audio) % hop)
+
+          audio = np.ascontiguousarray(
+              audio[:length],
+              dtype=np.float32
+          )
+
+          sess = ort.InferenceSession(
+              "encoder/model.onnx",
+              providers=["CPUExecutionProvider"]
+          )
+
+          codes = sess.run(
+              ["audio_codes"],
+              {
+                  "audio":
+                  audio.reshape(1, 1, -1)
+              }
+          )[0]
+
+          assert codes.ndim == 3
+          assert codes.shape[0] == 1
+          assert codes.shape[1] == 8
+
+          payload = {
+              "speaker": "Mohamed",
+              "language": "arz",
+              "referenceText": spk["reference_text"],
+              "numCodebooks": int(codes.shape[1]),
+              "tokenCount": int(codes.shape[2]),
+              "tokens":
+                  codes.reshape(-1)
+                  .astype(np.int32)
+                  .tolist()
+          }
+
+          (
+              root / "release/mohamed-tokens.json"
+          ).write_text(
+              json.dumps(
+                  payload,
+                  ensure_ascii=False,
+                  separators=(",", ":")
+              ),
+              encoding="utf-8"
+          )
+
+          print(
+              "MOHAMED_TOKENS_READY",
+              codes.shape
+          )
+          PY
+
+      - name: Prepare stable browser assets
+        run: |
+          cp bundle/main/voicetut-main.onnx \
+             release/voicetut-main.onnx
+
+          cp bundle/main/voicetut-main.onnx_data \
+             release/voicetut-main.onnx_data
+
+          cp bundle/audio/audio-tokenizer-decoder.onnx \
+             release/audio-tokenizer-decoder.onnx
+
+          cp bundle/audio/audio-tokenizer-decoder.onnx_data \
+             release/audio-tokenizer-decoder.onnx_data
+
+          cp bundle/main/tokenizer.json \
+             release/tokenizer.json
+
+          cp bundle/main/tokenizer_config.json \
+             release/tokenizer_config.json
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          cfg = json.loads(
+              Path(
+                  "bundle/main/omnivoice-config.json"
+              ).read_text(encoding="utf-8")
+          )
+
+          cfg["sampling_rate"] = 24000
+          cfg["frame_rate"] = 25
+
+          Path(
+              "release/omnivoice-config.json"
+          ).write_text(
+              json.dumps(
+                  cfg,
+                  ensure_ascii=False,
+                  indent=2
+              ),
+              encoding="utf-8"
+          )
+
+          manifest = {
+              "mainModel":
+                  "voicetut-main.onnx",
+
+              "mainData":
+                  "voicetut-main.onnx_data",
+
+              "decoderModel":
+                  "audio-tokenizer-decoder.onnx",
+
+              "decoderData":
+                  "audio-tokenizer-decoder.onnx_data",
+
+              "speakerTokens":
+                  "mohamed-tokens.json",
+
+              "tokenizerRepo":
+                  "Gigsu/vocoloco-onnx",
+
+              "language": "arz",
+              "sampleRate": 24000
+          }
+
+          Path(
+              "release/browser-manifest.json"
+          ).write_text(
+              json.dumps(
+                  manifest,
+                  ensure_ascii=False,
+                  indent=2
+              ),
+              encoding="utf-8"
+          )
+          PY
+
+          echo "===== RELEASE FILES ====="
+          ls -lh release/
+
+      - name: Publish GitHub Release assets
+        run: |
+          if gh release view "$TAG" \
+            --repo "${{ github.repository }}" \
+            >/dev/null 2>&1
+          then
+
+            gh release upload "$TAG" \
+              release/* \
+              --repo "${{ github.repository }}" \
+              --clobber
+
+          else
+
+            gh release create "$TAG" \
+              release/* \
+              --repo "${{ github.repository }}" \
+              --title "VoiceTut Egyptian ONNX v1" \
+              --notes "Browser-ready Egyptian VoiceTut ONNX assets for the iPad TTS app."
+
+          fi
+
+      - name: Success
+        run: |
+          echo "VOICE_TUT_STABLE_MODEL_RELEASE_READY"
+
+          gh release view "$TAG" \
+            --repo "${{ github.repository }}" \
+            --json url,tagName,name
