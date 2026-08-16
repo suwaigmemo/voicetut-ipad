@@ -870,8 +870,8 @@ async function init(modelBaseUrl, forceCPU) {
         );
     }
 
-    # Encoder intentionally omitted:
-    # Mohamed voice tokens are already precomputed.
+    // Encoder intentionally omitted:
+    // Mohamed voice tokens are already precomputed.
     encoderSession = null;
 
     postMessage({
